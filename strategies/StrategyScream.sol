@@ -9,11 +9,274 @@ import "@openzeppelin/contracts/utils/math/SafeMath.sol";
 import "@openzeppelin/contracts/utils/Address.sol";
 import "@openzeppelin/contracts/security/Pausable.sol";
 
-import "interfaces/IUniswapRouter.sol";
-import "interfaces/IComptroller.sol";
-import "interfaces/IVToken.sol";
-import "./StratManager.sol";
-import "./FeeManager.sol";
+contract StratManager is Ownable, Pausable {
+    /**
+     * @dev Beefy Contracts:
+     * {keeper} - Address to manage a few lower risk features of the strat
+     * {strategist} - Address of the strategy author/deployer where strategist fee will go.
+     * {vault} - Address of the vault that controls the strategy's funds.
+     * {unirouter} - Address of exchange to execute swaps.
+     */
+    address public keeper;
+    address public strategist;
+    address public unirouter;
+    address public vault;
+    address public lunariaFeeRecipient;
+
+    /**
+     * @dev Initializes the base strategy.
+     * @param _keeper address to use as alternative owner.
+     * @param _strategist address where strategist fees go.
+     * @param _unirouter router to use for swaps
+     * @param _vault address of parent vault.
+     * @param _lunariaFeeRecipient address where to send lunaria's fees.
+     */
+    constructor(
+        address _keeper,
+        address _strategist,
+        address _unirouter,
+        address _vault,
+        address _lunariaFeeRecipient
+    ) public {
+        keeper = _keeper;
+        strategist = _strategist;
+        unirouter = _unirouter;
+        vault = _vault;
+        lunariaFeeRecipient = _lunariaFeeRecipient;
+    }
+
+    // checks that caller is either owner or keeper.
+    modifier onlyManager() {
+        require(msg.sender == owner() || msg.sender == keeper, "!manager");
+        _;
+    }
+
+    /**
+     * @dev Updates address of the strat keeper.
+     * @param _keeper new keeper address.
+     */
+    function setKeeper(address _keeper) external onlyManager {
+        keeper = _keeper;
+    }
+
+    /**
+     * @dev Updates address where strategist fee earnings will go.
+     * @param _strategist new strategist address.
+     */
+    function setStrategist(address _strategist) external {
+        require(msg.sender == strategist, "!strategist");
+        strategist = _strategist;
+    }
+
+    /**
+     * @dev Updates router that will be used for swaps.
+     * @param _unirouter new unirouter address.
+     */
+    function setUnirouter(address _unirouter) external onlyOwner {
+        unirouter = _unirouter;
+    }
+
+    /**
+     * @dev Updates parent vault.
+     * @param _vault new vault address.
+     */
+    function setVault(address _vault) external onlyOwner {
+        vault = _vault;
+    }
+
+    /**
+     * @dev Updates lunaria fee recipient.
+     * @param _lunariaFeeRecipient new lunaria fee recipient address.
+     */
+    function setLunariaFeeRecipient(address _lunariaFeeRecipient) external onlyOwner {
+        lunariaFeeRecipient = _lunariaFeeRecipient;
+    }
+
+    /**
+     * @dev Function to synchronize balances before new user deposit.
+     * Can be overridden in the strategy.
+     */
+    function beforeDeposit() external virtual {}
+}
+
+abstract contract FeeManager is StratManager {
+    uint constant public STRATEGIST_FEE = 500;
+    uint constant public MAX_FEE = 1000;
+    uint constant public MAX_CALL_FEE = 100;
+
+    uint constant public WITHDRAWAL_FEE_CAP = 50;
+    uint constant public WITHDRAWAL_MAX = 10000;
+
+    uint public withdrawalFee = 0;
+
+    uint public callFee = 100;
+    uint public lunariaFee = MAX_FEE - STRATEGIST_FEE - callFee;
+
+    function setCallFee(uint256 _fee) public onlyManager {
+        require(_fee <= MAX_CALL_FEE, "!cap");
+        
+        callFee = _fee;
+        lunariaFee = MAX_FEE - STRATEGIST_FEE - callFee;
+    }
+
+    function setWithdrawalFee(uint256 _fee) public onlyManager {
+        require(_fee <= WITHDRAWAL_FEE_CAP, "!cap");
+
+        withdrawalFee = _fee;
+    }
+}
+
+interface IVToken is IERC20 {
+    function underlying() external returns (address);
+    function mint(uint mintAmount) external returns (uint);
+    function redeem(uint redeemTokens) external returns (uint);
+    function redeemUnderlying(uint redeemAmount) external returns (uint);
+    function borrow(uint borrowAmount) external returns (uint);
+    function repayBorrow(uint repayAmount) external returns (uint);
+    function balanceOfUnderlying(address owner) external returns (uint);
+    function borrowBalanceCurrent(address account) external returns (uint);
+    function comptroller() external returns (address);
+}
+
+interface IComptroller {
+    function claimComp(address holder, address[] calldata _iTokens) external;
+    function claimComp(address holder) external;
+    function compAccrued(address holder) view external returns (uint256 comp);
+    function enterMarkets(address[] memory _iTokens) external;
+    function pendingComptrollerImplementation() view external returns (address implementation);
+}
+
+
+interface IUniswapRouter {
+    function factory() external pure returns (address);
+    function WBNB() external pure returns (address);
+
+    function addLiquidity(
+        address tokenA,
+        address tokenB,
+        uint amountADesired,
+        uint amountBDesired,
+        uint amountAMin,
+        uint amountBMin,
+        address to,
+        uint deadline
+    ) external returns (uint amountA, uint amountB, uint liquidity);
+    function addLiquidityBNB(
+        address token,
+        uint amountTokenDesired,
+        uint amountTokenMin,
+        uint amountBNBMin,
+        address to,
+        uint deadline
+    ) external payable returns (uint amountToken, uint amountBNB, uint liquidity);
+    function removeLiquidity(
+        address tokenA,
+        address tokenB,
+        uint liquidity,
+        uint amountAMin,
+        uint amountBMin,
+        address to,
+        uint deadline
+    ) external returns (uint amountA, uint amountB);
+    function removeLiquidityBNB(
+        address token,
+        uint liquidity,
+        uint amountTokenMin,
+        uint amountBNBMin,
+        address to,
+        uint deadline
+    ) external returns (uint amountToken, uint amountBNB);
+    function removeLiquidityWithPermit(
+        address tokenA,
+        address tokenB,
+        uint liquidity,
+        uint amountAMin,
+        uint amountBMin,
+        address to,
+        uint deadline,
+        bool approveMax, uint8 v, bytes32 r, bytes32 s
+    ) external returns (uint amountA, uint amountB);
+    function removeLiquidityBNBWithPermit(
+        address token,
+        uint liquidity,
+        uint amountTokenMin,
+        uint amountBNBMin,
+        address to,
+        uint deadline,
+        bool approveMax, uint8 v, bytes32 r, bytes32 s
+    ) external returns (uint amountToken, uint amountBNB);
+    function removeLiquidityBNBSupportingFeeOnTransferTokens(
+        address token,
+        uint liquidity,
+        uint amountTokenMin,
+        uint amountBNBMin,
+        address to,
+        uint deadline
+    ) external returns (uint amountBNB);
+    function removeLiquidityBNBWithPermitSupportingFeeOnTransferTokens(
+        address token,
+        uint liquidity,
+        uint amountTokenMin,
+        uint amountBNBMin,
+        address to,
+        uint deadline,
+        bool approveMax, uint8 v, bytes32 r, bytes32 s
+    ) external returns (uint amountBNB);
+    function swapExactTokensForTokens(
+        uint amountIn,
+        uint amountOutMin,
+        address[] calldata path,
+        address to,
+        uint deadline
+    ) external returns (uint[] memory amounts);
+    function swapTokensForExactTokens(
+        uint amountOut,
+        uint amountInMax,
+        address[] calldata path,
+        address to,
+        uint deadline
+    ) external returns (uint[] memory amounts);
+    function swapExactTokensForTokensSupportingFeeOnTransferTokens(
+        uint amountIn,
+        uint amountOutMin,
+        address[] calldata path,
+        address to,
+        uint deadline
+    ) external;
+    function swapExactBNBForTokensSupportingFeeOnTransferTokens(
+        uint amountOutMin,
+        address[] calldata path,
+        address to,
+        uint deadline
+    ) external payable;
+    function swapExactTokensForBNBSupportingFeeOnTransferTokens(
+        uint amountIn,
+        uint amountOutMin,
+        address[] calldata path,
+        address to,
+        uint deadline
+    ) external;
+    function swapExactBNBForTokens(uint amountOutMin, address[] calldata path, address to, uint deadline)
+        external
+        payable
+        returns (uint[] memory amounts);
+    function swapTokensForExactBNB(uint amountOut, uint amountInMax, address[] calldata path, address to, uint deadline)
+        external
+        returns (uint[] memory amounts);
+    function swapExactTokensForBNB(uint amountIn, uint amountOutMin, address[] calldata path, address to, uint deadline)
+        external
+        returns (uint[] memory amounts);
+    function swapBNBForExactTokens(uint amountOut, address[] calldata path, address to, uint deadline)
+        external
+        payable
+        returns (uint[] memory amounts);
+
+    function quote(uint amountA, uint reserveA, uint reserveB) external pure returns (uint amountB);
+    function getAmountOut(uint amountIn, uint reserveIn, uint reserveOut) external pure returns (uint amountOut);
+    function getAmountIn(uint amountOut, uint reserveIn, uint reserveOut) external pure returns (uint amountIn);
+    function getAmountsOut(uint amountIn, address[] calldata path) external view returns (uint[] memory amounts);
+    function getAmountsIn(uint amountOut, address[] calldata path) external view returns (uint[] memory amounts);
+}
 
 
 //Lending Strategy 
@@ -59,8 +322,8 @@ contract StrategyScream is StratManager, FeeManager {
 
     uint256 public balanceOfPool;
 
-    bool initializedBorrow;
-    bool initializedMarket;
+    bool public initializedBorrow;
+    bool public initializedMarket;
 
     /**
      * @dev Events that the contract emits
