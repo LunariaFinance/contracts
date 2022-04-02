@@ -1,12 +1,12 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.0;
 
-import "@openzeppelin/contracts/token/ERC20/ERC20.sol";
-import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import "@openzeppelin/contracts/token/ERC20/extensions/draft-ERC20Permit.sol";
+import "@openzeppelin/contracts/token/ERC20/extensions/draft-IERC20Permit.sol";
 import "@openzeppelin/contracts/access/Ownable.sol";
 import "@openzeppelin/contracts/utils/Address.sol";
 
-contract LnToken is ERC20 {
+contract LnToken is ERC20Permit {
     using Address for address;
 
     bool public initialized;
@@ -15,7 +15,7 @@ contract LnToken is ERC20 {
 
     event SetValidBank(address _bank, bool _isValid);
 
-    constructor(string memory _name, string memory _symbol, uint8 _lnTokenDecimal) ERC20(_name, _symbol) {
+    constructor(string memory _name, string memory _symbol, uint8 _lnTokenDecimal) ERC20(_name, _symbol) ERC20Permit(_name) {
         lnTokenDecimal = _lnTokenDecimal;
     }
 
