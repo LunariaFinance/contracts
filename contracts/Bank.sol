@@ -382,14 +382,13 @@ contract Bank is ReentrancyGuard, Ownable {
     function withdrawAll() public {
 
         // user info
-        uint256 collateralBalance = borrowerInfoMap[msg.sender].collateralAmount;
-
-        // update new debt with interest.
-        uint256 newBorrowedAmount = getDebtWithInterest(msg.sender);
+        (uint256 newBorrowedAmount, , uint256 collateralBalance)= getBorrowerInfo(msg.sender);
 
         uint256 lTV = vault.getLTV();
         uint256 maxLtv = lTV.mul(1e18).div(100);
-        uint256 minCollateral = newBorrowedAmount.mul(1e18).div(maxLtv);
+        uint256 minUnderlyingAsset = newBorrowedAmount.mul(1e18).div(maxLtv);
+        uint256 pricePerShare = vault.getPricePerFullShare();
+        uint256 minCollateral = minUnderlyingAsset.mul(1e18).div(pricePerShare);
 
         uint256 maxWithdrawable = collateralBalance.sub(minCollateral);
 
